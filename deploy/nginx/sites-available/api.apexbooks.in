@@ -1,0 +1,81 @@
+# /etc/nginx/sites-available/api.apexbooks.in
+#
+# Enable with:
+#   ln -s /etc/nginx/sites-available/api.apexbooks.in /etc/nginx/sites-enabled/
+#
+# Do NOT enable this file before the certificate exists: nginx will not start
+# while ssl_certificate points at a missing file, and a server that will not
+# start cannot serve the ACME challenge that would create the certificate. Run
+# deploy/tls/issue-cert.sh first — it handles exactly that ordering.
+
+upstream atria_api {
+    server 127.0.0.1:8080;
+    # Keep a pool of connections to the API container open, so a burst of
+    # requests does not become a burst of TCP handshakes.
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name api.apexbooks.in;
+
+    # ACME challenges served from a webroot, so renewal never depends on the
+    # certificate that is being renewed.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    # `listen ... ssl http2` rather than the newer `http2 on;` directive because
+    # Ubuntu 24.04 ships nginx 1.24, where `http2 on;` does not exist. On nginx
+    # >= 1.25.1 switch to `http2 on;` to silence the deprecation warning.
+    server_name api.apexbooks.in;
+
+    ssl_certificate     /etc/letsencrypt/live/api.apexbooks.in/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.apexbooks.in/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+
+    # Don't advertise the nginx version.
+    server_tokens off;
+
+    # Invoices are small. The largest legitimate body is a sync push; anything
+    # larger is a mistake or an attack. The API enforces its own, lower limit.
+    client_max_body_size 2m;
+
+    # Separate log files, so an incident on the API is not buried in access_log.
+    access_log /var/log/nginx/api.apexbooks.in.access.log;
+    error_log  /var/log/nginx/api.apexbooks.in.error.log warn;
+
+    # Sign-in and sign-up use the strict rate-limit zone. `burst` allows a few
+    # quick retries — a mistyped password should not lock anyone out — while
+    # `nodelay` keeps the burst from being a way to double the rate.
+    location ~ ^/v1/auth/ {
+        limit_req zone=atria_auth burst=10 nodelay;
+        proxy_pass http://atria_api;
+        include /etc/nginx/snippets/atria-proxy.conf;
+    }
+
+    location / {
+        limit_req zone=atria_api burst=60 nodelay;
+        proxy_pass http://atria_api;
+        include /etc/nginx/snippets/atria-proxy.conf;
+    }
+}

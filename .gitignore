@@ -1,0 +1,13 @@
+# Secrets. Only .env.example is committed.
+.env
+*.env
+!.env.example
+
+# Local database and backup artifacts
+backups/
+*.dump
+
+# Anything a laptop copies down from the server
+*.pem
+*.key
+certbot/

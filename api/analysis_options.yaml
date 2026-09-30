@@ -1,0 +1,9 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+    strict-raw-types: true
+  errors:
+    # A server that silently ignores an unawaited future is a bug factory.
+    unawaited_futures: error

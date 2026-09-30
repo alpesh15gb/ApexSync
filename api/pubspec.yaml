@@ -1,0 +1,17 @@
+name: atria_api
+description: >-
+  Atria's sync API — identity, tenancy and health endpoints for the desktop and
+  mobile apps. Runs on our own Indian VPS behind host nginx (audit/07).
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.5.0
+dependencies:
+  dart_jsonwebtoken: ^3.4.1
+  postgres: ^3.5.17
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+dev_dependencies:
+  lints: ^6.1.0
+  test: ^1.32.0

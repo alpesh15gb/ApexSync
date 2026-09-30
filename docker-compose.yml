@@ -1,0 +1,136 @@
+# Atria API server — Postgres + the API container, nothing else.
+#
+#   cp .env.example .env      # then replace every CHANGE_ME
+#   docker compose up -d --build
+#   docker compose --profile tools run --rm migrate
+#
+# Host nginx is the only public listener and terminates TLS (deploy/nginx/).
+# Postgres is not published on the host at all, and the API is published on
+# 127.0.0.1 only, so neither is reachable from the internet even by accident.
+#
+# See audit/07-self-hosted-india-vps.md for why the stack is this small: the
+# full self-hosted Supabase bundle is 11+ containers needing 8 GB, to provide
+# Studio, Storage, Realtime and Edge Functions this app does not use.
+name: atria-server
+
+services:
+  db:
+    # Pinned by major version. Pin by digest if you want the image to be
+    # bit-identical across rebuilds.
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in server/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in server/.env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in server/.env}
+      # Read by db/init/01-init.sh, on first boot of an empty volume only.
+      ATRIA_DB_USER: ${ATRIA_DB_USER:?set ATRIA_DB_USER in server/.env}
+      ATRIA_DB_PASSWORD: ${ATRIA_DB_PASSWORD:?set ATRIA_DB_PASSWORD in server/.env}
+    command:
+      - postgres
+      # wal_level=logical costs nothing today and is the one setting that cannot
+      # be added later without a restart and a replication-slot dance. It is what
+      # makes adopting PowerSync (audit/07 §3) a config change rather than a
+      # migration project. The replication slots it needs are reserved here too.
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      # Sized for a single small VPS, not a default 128 MB that cannot hold the
+      # working set.
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - max_connections=100
+      # Anything slower than this is a bug worth seeing in the log. The API role
+      # has a 15s statement_timeout, so a runaway query cannot hold the disk.
+      - -c
+      - log_min_duration_statement=500
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Read-only. These scripts never write to the host.
+      - ./db:/db:ro
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # Deliberately no `ports:`. A published database port is the single most
+    # common way a self-hosted install gets taken over.
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  api:
+    build:
+      context: ./api
+      args:
+        DART_IMAGE: ${DART_IMAGE:-dart:3.13}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ATRIA_DB_HOST: db
+      ATRIA_DB_PORT: '5432'
+      ATRIA_DB_NAME: ${POSTGRES_DB:?set POSTGRES_DB in server/.env}
+      ATRIA_DB_USER: ${ATRIA_DB_USER:?set ATRIA_DB_USER in server/.env}
+      ATRIA_DB_PASSWORD: ${ATRIA_DB_PASSWORD:?set ATRIA_DB_PASSWORD in server/.env}
+      # Private compose network. TLS is terminated by host nginx; the API never
+      # speaks TLS itself.
+      ATRIA_DB_SSLMODE: disable
+      ATRIA_JWT_SECRET: ${ATRIA_JWT_SECRET:?set ATRIA_JWT_SECRET in server/.env}
+      ATRIA_JWT_ISSUER: ${ATRIA_JWT_ISSUER:-api.apexbooks.in}
+      ATRIA_ACCESS_TOKEN_TTL: ${ATRIA_ACCESS_TOKEN_TTL:-15m}
+      ATRIA_REFRESH_TOKEN_TTL: ${ATRIA_REFRESH_TOKEN_TTL:-30d}
+      ATRIA_PUBLIC_BASE_URL: ${ATRIA_PUBLIC_BASE_URL:-https://api.apexbooks.in}
+      ATRIA_LOG_LEVEL: ${ATRIA_LOG_LEVEL:-info}
+      ATRIA_VERSION: ${ATRIA_VERSION:-0.1.0}
+      ATRIA_MAX_BODY_BYTES: ${ATRIA_MAX_BODY_BYTES:-262144}
+      ATRIA_API_PORT: '8080'
+    ports:
+      # Loopback only. Host nginx proxies to this; nothing else can reach it.
+      # Change API_HOST_PORT in .env if 8080 is already taken on the host.
+      - '127.0.0.1:${API_HOST_PORT:-8080}:8080'
+    security_opt:
+      - no-new-privileges:true
+    # The compiled binary writes nothing; the tmpfs is for anything Dart needs
+    # transiently. A read-only root is worth the occasional head-scratch.
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging: *logging
+
+  # Applies migrations that have not run yet:
+  #   docker compose --profile tools run --rm migrate
+  #
+  # Uses the Postgres image because it already ships psql, so no extra tooling
+  # and no migration logic in the API image. Run it after every deploy that
+  # changes db/migrations/.
+  migrate:
+    image: postgres:17-alpine
+    profiles: ['tools']
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: '5432'
+      PGDATABASE: ${POSTGRES_DB:?set POSTGRES_DB in server/.env}
+      # Migrations run as the superuser, because they create tables that the
+      # application role must *not* own (a table's owner bypasses RLS).
+      PGUSER: ${POSTGRES_USER:?set POSTGRES_USER in server/.env}
+      PGPASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in server/.env}
+      ATRIA_DB_USER: ${ATRIA_DB_USER:?set ATRIA_DB_USER in server/.env}
+    volumes:
+      - ./db:/db:ro
+    entrypoint: ['sh', '/db/apply-migrations.sh']
+
+volumes:
+  pgdata:

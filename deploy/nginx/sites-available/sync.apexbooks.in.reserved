@@ -1,0 +1,80 @@
+# RESERVED — deliberately NOT enabled, and no DNS record points at it yet.
+#
+# PowerSync requires its API container on a *dedicated* subdomain; its docs are
+# explicit that it will not share a subdomain with another service
+# (audit/07 §6). Claiming the name now costs nothing and means adopting PowerSync
+# later does not begin with a DNS change and a certificate request.
+#
+# The file is named .reserved on purpose: nginx only loads files you symlink
+# into sites-enabled, and the suffix makes it obvious at a glance that this is a
+# plan rather than a running service.
+#
+# To activate:
+#   1. Create the DNS A record for sync.apexbooks.in.
+#   2. Add the PowerSync service to docker-compose.yml (image
+#      journeyapps/powersync-service, ports 127.0.0.1:8081:8080).
+#   3. cp this file to sites-available/sync.apexbooks.in, drop the .reserved
+#      suffix, and issue a certificate for it as in deploy/tls/issue-cert.sh.
+#   4. Configure PowerSync's client_auth to accept our JWTs:
+#        client_auth:
+#          supabase: true
+#          supabase_jwt_secret: <the same ATRIA_JWT_SECRET>
+#      Our issuer signs HS256 with a shared secret, which is exactly what that
+#      setting expects — see server/api/lib/src/auth/token_issuer.dart.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name sync.apexbooks.in;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name sync.apexbooks.in;
+
+    ssl_certificate     /etc/letsencrypt/live/sync.apexbooks.in/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/sync.apexbooks.in/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    server_tokens off;
+
+    # Sync traffic is not like the API's: a device holds a long-lived streaming
+    # connection and receives a delta the moment it is available. Two settings
+    # matter and both are easy to get wrong.
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+
+    # 1. Never buffer a streaming response; it turns a live feed into a burst
+    #    every few seconds, or into nothing at all.
+    proxy_buffering off;
+
+    # 2. Do not time out an idle stream. A quiet device is a connected device.
+    proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
+
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+    }
+
+    # PowerSync's own liveness probe, for monitoring.
+    location /probes/liveness {
+        proxy_pass http://127.0.0.1:8081/probes/liveness;
+        access_log off;
+    }
+}

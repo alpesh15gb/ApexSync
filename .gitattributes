@@ -1,0 +1,11 @@
+# This code runs on Linux. A file checked out with CRLF line endings fails there
+# in ways that look like anything but a line-ending problem:
+#
+#   * `bash deploy/tls/issue-cert.sh` -> "$'\r': command not found"
+#   * a `#!/bin/sh\r` shebang -> "bad interpreter: /bin/sh^M"
+#   * a Dockerfile `RUN ... \` continuation loses its backslash and the build
+#     fails with a parse error on the next line
+#
+# So normalise everything to LF, in the repository and on checkout, regardless
+# of the core.autocrlf setting of whoever is committing.
+* text=auto eol=lf

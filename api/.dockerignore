@@ -1,0 +1,7 @@
+# Never let build output or local artifacts into the image.
+.dart_tool/
+.packages
+build/
+test/
+*.log
+.env
