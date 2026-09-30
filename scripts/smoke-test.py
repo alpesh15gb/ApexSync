@@ -236,8 +236,16 @@ def main() -> int:
                 c.check("the app role is not a superuser", value == "f", value)
                 value, _ = sql("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname='firms';")
                 c.check("the app role does not own the tables (or RLS would be bypassed)", value != app_role, value)
-                value, _ = sql("SELECT count(*) FROM pg_policies WHERE schemaname='public';")
-                c.check("the tenant policies exist (5 expected)", value == "5", value)
+                value, _ = sql(
+                    "SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname = ANY("
+                    "ARRAY['firms_select_member','firms_update_admin','firms_delete_admin',"
+                    "'firm_members_select_member','firm_members_write_admin',"
+                    "'firm_changes_select_member','firm_changes_insert_member']);"
+                )
+                # By name, not a bare count: 0003 adds two policies and a
+                # bare "5" broke the moment it first applied. A missing
+                # policy still fails this; a new one added later does not.
+                c.check("every tenant policy the migrations create exists (7 expected)", value == "7", value)
                 value, _ = sql("SHOW wal_level;")
                 c.check("wal_level is logical (reserved for PowerSync)", value == "logical", value)
                 value, _ = sql("SELECT count(*) FROM schema_migrations;")
