@@ -13,6 +13,7 @@ import 'log.dart';
 import 'routes/auth_routes.dart';
 import 'routes/firm_routes.dart';
 import 'routes/health_routes.dart';
+import 'routes/scan_routes.dart';
 import 'routes/sync_routes.dart';
 import 'sync/sync_repository.dart';
 
@@ -68,6 +69,12 @@ Handler buildHandler({
   addSyncRoutes(
     router,
     repository: syncRepository,
+    config: config,
+    guard: authenticate(issuer),
+  );
+
+  addScanRoutes(
+    router,
     config: config,
     guard: authenticate(issuer),
   );

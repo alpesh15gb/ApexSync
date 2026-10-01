@@ -30,6 +30,10 @@ class Config {
     required this.logLevel,
     required this.maxRequestBodyBytes,
     required this.version,
+    this.scanApiUrl = '',
+    this.scanApiKey = '',
+    this.scanModel = 'gpt-4o-mini',
+    this.scanMaxImageBytes = 10 * 1024 * 1024,
   });
 
   /// Full `postgresql://` URL, assembled here so a password containing `/`,
@@ -46,6 +50,22 @@ class Config {
   final String logLevel;
   final int maxRequestBodyBytes;
   final String version;
+
+  /// Bill-scan (vision) backend, enabled only when [scanApiUrl] and
+  /// [scanApiKey] are set. The key lives ONLY here, in the server's
+  /// environment: the app authenticates to this server, this server
+  /// authenticates to the vision vendor, and no vendor key ever reaches a
+  /// device or the repo.
+  final String scanApiUrl;
+  final String scanApiKey;
+  final String scanModel;
+
+  /// Largest image upload the scan endpoint accepts. A phone photo of a bill
+  /// is 2-6 MB; 10 MB covers the clumsy edge without inviting video.
+  final int scanMaxImageBytes;
+
+  /// True when the scan endpoint can actually do its job.
+  bool get scanEnabled => scanApiUrl.isNotEmpty && scanApiKey.isNotEmpty;
 
   bool get isDebug => logLevel == 'debug';
 
@@ -134,6 +154,32 @@ class Config {
     final maxRequestBodyBytes = integer('ATRIA_MAX_BODY_BYTES', 256 * 1024);
     final version = optional('ATRIA_VERSION') ?? '0.1.0';
 
+    // Bill scan. Optional: unset means the feature is off and the route
+    // reports that, rather than the server refusing to boot over a feature
+    // most deployments do not use.
+    final scanApiUrl = optional('ATRIA_SCAN_API_URL') ?? '';
+    final scanApiKey = optional('ATRIA_SCAN_API_KEY') ?? '';
+    final scanModel = optional('ATRIA_SCAN_MODEL') ?? 'gpt-4o-mini';
+    final scanMaxImageBytes =
+        integer('ATRIA_SCAN_MAX_IMAGE_BYTES', 10 * 1024 * 1024);
+
+    if (scanEnabledRuntime(scanApiUrl, scanApiKey)) {
+      final parsedUrl = Uri.tryParse(scanApiUrl);
+      if (parsedUrl == null ||
+          !parsedUrl.hasScheme ||
+          (parsedUrl.scheme != 'https' && parsedUrl.scheme != 'http')) {
+        problems.add('ATRIA_SCAN_API_URL must be a valid http(s) URL');
+      }
+      if (scanModel.isEmpty) {
+        problems.add('ATRIA_SCAN_MODEL must not be empty when scan is enabled');
+      }
+    }
+    if (scanMaxImageBytes < 1024) {
+      problems.add(
+        'ATRIA_SCAN_MAX_IMAGE_BYTES must be at least 1024, got $scanMaxImageBytes',
+      );
+    }
+
     if (maxRequestBodyBytes < 1024) {
       problems.add('ATRIA_MAX_BODY_BYTES must be at least 1024, got $maxRequestBodyBytes');
     }
@@ -165,8 +211,17 @@ class Config {
       logLevel: logLevel,
       maxRequestBodyBytes: maxRequestBodyBytes,
       version: version,
+      scanApiUrl: scanApiUrl,
+      scanApiKey: scanApiKey,
+      scanModel: scanModel,
+      scanMaxImageBytes: scanMaxImageBytes,
     );
   }
+
+  /// Static helper so the validation block can test enablement without a
+  /// full [Config] instance.
+  static bool scanEnabledRuntime(String apiUrl, String apiKey) =>
+      apiUrl.isNotEmpty && apiKey.isNotEmpty;
 
   static List<String> _validateDatabaseUrl(
     String host,

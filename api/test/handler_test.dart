@@ -421,6 +421,81 @@ void main() {
     });
   });
 
+  group('bill scan', () {
+    const firmId = '018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b';
+    late String token;
+
+    setUpAll(() {
+      token = TokenIssuer(
+        secret: testConfig().jwtSecret,
+        issuer: 'api.apexbooks.in',
+        ttl: const Duration(minutes: 15),
+      ).issue(userId: 'user-1', deviceId: 'device-1');
+    });
+
+    Map<String, String> auth() => {'authorization': 'Bearer $token'};
+
+    /// A payload with a real JPEG magic number, so it passes type sniffing
+    /// on the tests that get that far.
+    final jpegish = base64Encode(
+      [0xFF, 0xD8, 0xFF, 0xE0, ...List.filled(2048, 0x11)],
+    );
+
+    Future<Response> scan({Object? body}) => send(
+          'POST',
+          '/v1/firms/$firmId/scan-bill',
+          headers: auth(),
+          body: jsonEncode(body ?? {'imageBase64': jpegish}),
+        );
+
+    test('scanning without a token is a JSON 401', () async {
+      final response = await send(
+        'POST',
+        '/v1/firms/$firmId/scan-bill',
+        body: jsonEncode({'imageBase64': 'x'}),
+      );
+      expect(response.statusCode, 401);
+    });
+
+    test('a malformed firm id is a 400 before any work', () async {
+      final response = await send(
+        'POST',
+        '/v1/firms/not-a-uuid/scan-bill',
+        headers: auth(),
+        body: jsonEncode({'imageBase64': 'x'}),
+      );
+      expect(response.statusCode, 400);
+    });
+
+    test('an unconfigured backend is a 501 that names the variables',
+        () async {
+      // handler's config has no ATRIA_SCAN_* values, which is exactly how a
+      // deployment without the feature looks.
+      final response = await scan();
+      expect(response.statusCode, 501);
+      final body = await bodyOf(response);
+      expect((body['error'] as Map)['code'], 'not_configured');
+      expect(
+        (body['error'] as Map)['message'],
+        contains('ATRIA_SCAN_API_URL'),
+      );
+    });
+
+    test('a missing image is a 400 naming the field', () async {
+      final response = await scan(body: {});
+      expect(response.statusCode, 400);
+      expect(
+        ((await bodyOf(response))['error'] as Map)['message'],
+        contains('imageBase64'),
+      );
+    });
+
+    test('invalid base64 is a 400', () async {
+      final response = await scan(body: {'imageBase64': 'not base64!!'});
+      expect(response.statusCode, 400);
+    });
+  });
+
   group('request validation', () {
     test('a missing body is rejected before any database work', () async {
       final response = await send('POST', '/v1/auth/login');
