@@ -17,6 +17,21 @@ class ScannedBill {
   final String model;
 }
 
+/// Normalises a configured scan endpoint into a full chat-completions URL.
+///
+/// Deployments naturally write the base (".../v1") the way every SDK treats
+/// it, while the wire protocol wants the full path. Accepting both - and a
+/// trailing slash - is cheaper than a deploy failing on a 404 from its own
+/// gateway. A URL that already ends in `/chat/completions` passes through
+/// untouched.
+Uri chatCompletionsUrl(String configured) {
+  var trimmed = configured.trim().replaceFirst(RegExp(r'/+$'), '');
+  if (!trimmed.endsWith('/chat/completions')) {
+    trimmed = '$trimmed/chat/completions';
+  }
+  return Uri.parse(trimmed);
+}
+
 /// Thrown when the vision backend cannot do its job, with a message the app
 /// can show as-is.
 class ScanException implements Exception {
@@ -75,7 +90,7 @@ class VisionClient {
     required List<int> imageBytes,
     required String mimeType,
   }) async {
-    final uri = Uri.parse(_config.scanApiUrl);
+    final uri = chatCompletionsUrl(_config.scanApiUrl);
     final client = HttpClient()..connectionTimeout = _timeout;
     try {
       final request = await client.postUrl(uri).timeout(_timeout);
