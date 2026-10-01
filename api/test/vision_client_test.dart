@@ -32,8 +32,16 @@ void main() {
 
   /// Starts a fake gateway on a real loopback socket, because the client's
   /// whole job is HTTP: a stubbed HttpClient would test the stub. Port 0 lets
-  /// the OS pick, so parallel test runs cannot collide.
-  Future<void> startGateway(int status, String body) async {
+  /// the OS pick, so parallel test runs cannot collide. [sequence] scripts
+  /// successive answers (the last repeats), which is how retry behaviour is
+  /// exercised against the same wire protocol.
+  Future<void> startGateway(
+    int status,
+    String body, {
+    List<MapEntry<int, String>>? sequence,
+  }) async {
+    final script = sequence ?? [MapEntry(status, body)];
+    var index = 0;
     seen = [];
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
@@ -41,9 +49,11 @@ void main() {
       // error instead of the response.
       sentPayload = await utf8.decoder.bind(request).join();
       seen.add(request);
-      request.response.statusCode = status;
+      final step = script[index < script.length - 1 ? index : script.length - 1];
+      index++;
+      request.response.statusCode = step.key;
       request.response.headers.contentType = ContentType.json;
-      request.response.write(body);
+      request.response.write(step.value);
       await request.response.close();
     });
   }
@@ -94,11 +104,12 @@ void main() {
     expect(sentPayload, contains('"model":"gpt-4o-mini"'));
   });
 
-  test('a 502 from the gateway is a scan failure that logs why', () async {
+  test('a 502 on both attempts fails after exactly two requests', () async {
     // This is the live shape observed from the deployment's gateway: it
     // accepts the key, then fails downstream and answers 502 with the reason
-    // in its body. The app must get a named failure; the log must get the
-    // reason, or every diagnosis is a guess.
+    // in its body. The client retries once - the gateway's pools have flaky
+    // providers - but a persistent failure must still surface as a named
+    // error, with every attempt's reason in the log.
     await startGateway(
       502,
       jsonEncode({
@@ -118,11 +129,76 @@ void main() {
       ),
     );
 
-    final entry = log.entries.single;
-    expect(entry['msg'], 'scan_gateway_error');
-    expect(entry['status'], 502);
-    expect(entry['body'], contains('No active credentials for provider'));
-    expect(entry['url'], endsWith('/v1/chat/completions'));
+    expect(seen, hasLength(2));
+    final msgs = log.entries.map((e) => e['msg']).toList();
+    expect(msgs, ['scan_gateway_error', 'scan_retry', 'scan_gateway_error']);
+    expect(log.entries.first['body'], contains('No active credentials for provider'));
+    expect(log.entries.first['url'], endsWith('/v1/chat/completions'));
+    expect(log.entries[1]['reason'], contains('HTTP 502'));
+  });
+
+  test('a transient 502 is retried once and the second answer wins', () async {
+    const goodAnswer =
+        '{"choices":[{"message":{"content":"{\\"supplierName\\":\\"Sharma Traders\\"}"}}]}';
+    await startGateway(
+      502,
+      '',
+      sequence: [
+        const MapEntry(
+          502,
+          '{"error":{"message":"Cloudflare Playground browser session failed"}}',
+        ),
+        const MapEntry(200, goodAnswer),
+      ],
+    );
+
+    final bill = await clientFor(server.port, captured: log).scanBill(
+      imageBytes: image,
+      mimeType: 'image/jpeg',
+    );
+
+    expect(bill.raw['supplierName'], 'Sharma Traders');
+    expect(seen, hasLength(2));
+    // The retry hardens the prompt, because the usual first-try failure is a
+    // model that ignored the JSON-only contract.
+    expect(sentPayload, contains('machine-parsed'));
+    expect(
+      log.entries.map((e) => e['msg']),
+      ['scan_gateway_error', 'scan_retry'],
+    );
+  });
+
+  test('a canned prose answer is retried once and the retry answers JSON',
+      () async {
+    // The gateway's provider pool sometimes answers HTTP 200 with boilerplate
+    // instead of the requested JSON. That is a junk answer, not a bill
+    // reading - so it is retried exactly once rather than failing the scan.
+    await startGateway(
+      200,
+      '',
+      sequence: [
+        const MapEntry(
+          200,
+          '{"choices":[{"message":{"content":"Gemini 3 Pro is no longer '
+              'available. Please switch to Gemini 3.1 Pro."}}]}',
+        ),
+        const MapEntry(
+          200,
+          '{"choices":[{"message":{"content":"{\\"supplierName\\":'
+              '\\"Sharma Traders\\"}"}}]}',
+        ),
+      ],
+    );
+
+    final bill = await clientFor(server.port, captured: log).scanBill(
+      imageBytes: image,
+      mimeType: 'image/jpeg',
+    );
+
+    expect(bill.raw['supplierName'], 'Sharma Traders');
+    expect(seen, hasLength(2));
+    expect(log.entries.single['msg'], 'scan_retry');
+    expect(log.entries.single['reason'], contains('readable bill data'));
   });
 
   test('a rejected key names the server variable the operator must fix',
@@ -213,5 +289,7 @@ void main() {
         ),
       ),
     );
+    // A verdict is final: retrying the same photo would only double the wait.
+    expect(seen, hasLength(1));
   });
 }

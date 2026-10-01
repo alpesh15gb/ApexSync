@@ -36,10 +36,17 @@ Uri chatCompletionsUrl(String configured) {
 /// Thrown when the vision backend cannot do its job, with a message the app
 /// can show as-is.
 class ScanException implements Exception {
-  const ScanException(this.message, {this.statusCode});
+  const ScanException(this.message, {this.statusCode, this.retryable = true});
 
   final String message;
   final int? statusCode;
+
+  /// Whether one immediate retry is worth the latency. False for answers that
+  /// are certainly final - rejected credentials, rate limits, a photo the
+  /// model judged not to be a bill; true for the transient failures this
+  /// deployment's gateway produces when one provider in its pool has a bad
+  /// moment and the next request would sail through.
+  final bool retryable;
 
   @override
   String toString() => message;
@@ -65,6 +72,14 @@ class VisionClient {
   final Logger? _logger;
 
   static const _timeout = Duration(seconds: 60);
+
+  /// Appended to the prompt on the second attempt. Most first-try failures
+  /// are a model ignoring the JSON-only contract (or a broken provider in a
+  /// gateway pool answering with prose), so the retry repeats the instruction
+  /// most often ignored - and perturbs any response cache into fresh tokens.
+  static const _retryNudge =
+      ' Your answer is machine-parsed: return ONLY the bill JSON object, no '
+      'markdown fences, no prose before or after it.';
 
   /// Bounds a gateway's error body to one log-sized line. A misconfigured
   /// endpoint can answer with a whole HTML page; the point is to name the
@@ -110,87 +125,25 @@ class VisionClient {
     final uri = chatCompletionsUrl(_config.scanApiUrl);
     final client = HttpClient()..connectionTimeout = _timeout;
     try {
-      final request = await client.postUrl(uri).timeout(_timeout);
-      request.headers.set(HttpHeaders.authorizationHeader,
-          'Bearer ${_config.scanApiKey}');
-      request.headers.contentType = ContentType.json;
-
-      final body = jsonEncode({
-        'model': _config.scanModel,
-        'temperature': 0,
-        'messages': [
-          {
-            'role': 'user',
-            'content': [
-              {
-                'type': 'text',
-                'text': _prompt,
-              },
-              {
-                'type': 'image_url',
-                'image_url': {
-                  'url':
-                      'data:$mimeType;base64,${base64Encode(imageBytes)}',
-                },
-              },
-            ],
-          },
-        ],
-        // Some gateways cap max_tokens strictly; 4096 covers a long bill
-        // without inviting the model to write essays.
-        'max_tokens': 4096,
-      });
-      final encoded = utf8.encode(body);
-      request.headers.contentLength = encoded.length;
-      request.add(encoded);
-
-      final response = await request.close().timeout(_timeout);
-      final raw = await response.transform(utf8.decoder).join().timeout(_timeout);
-
-      if (response.statusCode == 401 || response.statusCode == 403) {
-        _logger?.warn('scan_gateway_rejected_key', {
-          'status': response.statusCode,
-          'url': uri.toString(),
-          'body': _snippet(raw),
-        });
-        throw const ScanException(
-          'The scan service rejected its credentials. Check ATRIA_SCAN_API_KEY '
-          'on the server.',
-          statusCode: 502,
-        );
+      // One immediate retry, because this deployment's gateway mixes flaky
+      // providers into its pools: a single 502 or a canned non-JSON answer is
+      // common while the very next request sails through. Only retryable
+      // failures get the second attempt - auth rejections, rate limits and
+      // not_a_bill verdicts are certainly final, and retrying them just
+      // doubles what the person holding the phone waits.
+      var attempt = 1;
+      while (true) {
+        try {
+          return await _scanOnce(client, uri, imageBytes, mimeType, attempt);
+        } on ScanException catch (error) {
+          if (!error.retryable || attempt >= 2) rethrow;
+          attempt++;
+          _logger?.warn('scan_retry', {
+            'attempt': 1,
+            'reason': _snippet(error.message),
+          });
+        }
       }
-      if (response.statusCode == 429) {
-        _logger?.warn('scan_gateway_rate_limited', {
-          'status': response.statusCode,
-          'url': uri.toString(),
-          'body': _snippet(raw),
-        });
-        throw const ScanException(
-          'The scan service is rate-limiting requests. Try again in a moment.',
-          statusCode: 429,
-        );
-      }
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        // The gateway is answering, but unhappily: almost always its own
-        // upstream (a provider key it does not hold, a model it does not
-        // route). Its body is the only place that reason exists, and it is
-        // useless to the person holding the phone - so it goes to the log
-        // while the app gets a line that names the failing side.
-        _logger?.warn('scan_gateway_error', {
-          'status': response.statusCode,
-          'url': uri.toString(),
-          'model': _config.scanModel,
-          'body': _snippet(raw),
-        });
-        throw ScanException(
-          'The scan service failed (HTTP ${response.statusCode}).',
-          statusCode: 502,
-        );
-      }
-
-      return _parseAnswer(raw);
-    } on ScanException {
-      rethrow;
     } on SocketException catch (error) {
       _logger?.warn('scan_gateway_unreachable', {
         'url': uri.toString(),
@@ -207,6 +160,99 @@ class VisionClient {
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// One gateway round-trip. [attempt] is 1 or 2; the second attempt hardens
+  /// the prompt with [_retryNudge] because the usual first-try failure is a
+  /// model that ignored the JSON-only contract.
+  Future<ScannedBill> _scanOnce(
+    HttpClient client,
+    Uri uri,
+    List<int> imageBytes,
+    String mimeType,
+    int attempt,
+  ) async {
+    final request = await client.postUrl(uri).timeout(_timeout);
+    request.headers.set(
+        HttpHeaders.authorizationHeader, 'Bearer ${_config.scanApiKey}');
+    request.headers.contentType = ContentType.json;
+
+    final body = jsonEncode({
+      'model': _config.scanModel,
+      'temperature': 0,
+      'messages': [
+        {
+          'role': 'user',
+          'content': [
+            {
+              'type': 'text',
+              'text': attempt == 1 ? _prompt : '$_prompt$_retryNudge',
+            },
+            {
+              'type': 'image_url',
+              'image_url': {
+                'url': 'data:$mimeType;base64,${base64Encode(imageBytes)}',
+              },
+            },
+          ],
+        },
+      ],
+      // Some gateways cap max_tokens strictly; 4096 covers a long bill
+      // without inviting the model to write essays.
+      'max_tokens': 4096,
+    });
+    final encoded = utf8.encode(body);
+    request.headers.contentLength = encoded.length;
+    request.add(encoded);
+
+    final response = await request.close().timeout(_timeout);
+    final raw = await response.transform(utf8.decoder).join().timeout(_timeout);
+
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      _logger?.warn('scan_gateway_rejected_key', {
+        'status': response.statusCode,
+        'url': uri.toString(),
+        'body': _snippet(raw),
+      });
+      throw const ScanException(
+        'The scan service rejected its credentials. Check ATRIA_SCAN_API_KEY '
+        'on the server.',
+        statusCode: 502,
+        retryable: false,
+      );
+    }
+    if (response.statusCode == 429) {
+      _logger?.warn('scan_gateway_rate_limited', {
+        'status': response.statusCode,
+        'url': uri.toString(),
+        'body': _snippet(raw),
+      });
+      throw const ScanException(
+        'The scan service is rate-limiting requests. Try again in a moment.',
+        statusCode: 429,
+        retryable: false,
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      // The gateway is answering, but unhappily: almost always its own
+      // upstream (a provider key it does not hold, a model it does not
+      // route). Its body is the only place that reason exists, and it is
+      // useless to the person holding the phone - so it goes to the log
+      // while the app gets a line that names the failing side. Transient by
+      // nature, so the caller retries once.
+      _logger?.warn('scan_gateway_error', {
+        'status': response.statusCode,
+        'url': uri.toString(),
+        'model': _config.scanModel,
+        'body': _snippet(raw),
+      });
+      throw ScanException(
+        'The scan service failed (HTTP ${response.statusCode}).',
+        statusCode: 502,
+      );
+    }
+
+    return _parseAnswer(raw);
   }
 
   /// Pulls the JSON answer out of a chat-completions response body.
@@ -264,9 +310,12 @@ class VisionClient {
     }
     final answer = bill.cast<String, Object?>();
     if (answer['error'] == 'not_a_bill') {
+      // A verdict, not a glitch: retrying the same photo would only double
+      // the wait before the same advice.
       throw const ScanException(
         'That does not look like a purchase bill. Photograph the whole '
         'invoice, flat and in focus.',
+        retryable: false,
       );
     }
 
