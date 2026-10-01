@@ -93,6 +93,13 @@ services:
       ATRIA_LOG_LEVEL: ${ATRIA_LOG_LEVEL:-info}
       ATRIA_VERSION: ${ATRIA_VERSION:-0.1.0}
       ATRIA_MAX_BODY_BYTES: ${ATRIA_MAX_BODY_BYTES:-262144}
+      # Bill scan. Unset in .env means the feature is off and the endpoint
+      # answers 501; the container must still receive the (possibly empty)
+      # values so a later .env edit takes effect without a code change.
+      ATRIA_SCAN_API_URL: ${ATRIA_SCAN_API_URL:-}
+      ATRIA_SCAN_API_KEY: ${ATRIA_SCAN_API_KEY:-}
+      ATRIA_SCAN_MODEL: ${ATRIA_SCAN_MODEL:-gpt-4o-mini}
+      ATRIA_SCAN_MAX_IMAGE_BYTES: ${ATRIA_SCAN_MAX_IMAGE_BYTES:-10485760}
       ATRIA_API_PORT: '8080'
     ports:
       # Loopback only. Host nginx proxies to this; nothing else can reach it.
