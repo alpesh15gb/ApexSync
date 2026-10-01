@@ -77,6 +77,7 @@ Handler buildHandler({
     router,
     config: config,
     guard: authenticate(issuer),
+    logger: logger,
   );
 
   router.get(

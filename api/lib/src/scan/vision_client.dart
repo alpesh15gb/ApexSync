@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../config.dart';
+import '../log.dart';
 
 /// The outcome of one bill scan.
 class ScannedBill {
@@ -53,11 +54,27 @@ class ScanException implements Exception {
 /// contract is "return only JSON". Keeping the vendor behind the server is the
 /// whole point of the feature's shape: the API key never leaves the VPS.
 class VisionClient {
-  VisionClient(this._config);
+  VisionClient(this._config, {Logger? logger}) : _logger = logger;
 
   final Config _config;
 
+  /// Optional so tests and one-off callers can build a client with nothing to
+  /// log to. Every failure that becomes a user-visible message is logged here
+  /// first: the message the phone shows says which side failed, and this line
+  /// says why, which is the difference between one redeploy and a log hunt.
+  final Logger? _logger;
+
   static const _timeout = Duration(seconds: 60);
+
+  /// Bounds a gateway's error body to one log-sized line. A misconfigured
+  /// endpoint can answer with a whole HTML page; the point is to name the
+  /// failure, not to copy the page into the container log.
+  static String _snippet(String body) {
+    final collapsed = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return collapsed.length <= 300
+        ? collapsed
+        : '${collapsed.substring(0, 300)}…';
+  }
 
   /// What the model is asked to do. Deliberately paranoid about money and
   /// GSTIN fields, because a hallucinated tax figure is worse than an empty
@@ -131,6 +148,11 @@ class VisionClient {
       final raw = await response.transform(utf8.decoder).join().timeout(_timeout);
 
       if (response.statusCode == 401 || response.statusCode == 403) {
+        _logger?.warn('scan_gateway_rejected_key', {
+          'status': response.statusCode,
+          'url': uri.toString(),
+          'body': _snippet(raw),
+        });
         throw const ScanException(
           'The scan service rejected its credentials. Check ATRIA_SCAN_API_KEY '
           'on the server.',
@@ -138,12 +160,28 @@ class VisionClient {
         );
       }
       if (response.statusCode == 429) {
+        _logger?.warn('scan_gateway_rate_limited', {
+          'status': response.statusCode,
+          'url': uri.toString(),
+          'body': _snippet(raw),
+        });
         throw const ScanException(
           'The scan service is rate-limiting requests. Try again in a moment.',
           statusCode: 429,
         );
       }
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        // The gateway is answering, but unhappily: almost always its own
+        // upstream (a provider key it does not hold, a model it does not
+        // route). Its body is the only place that reason exists, and it is
+        // useless to the person holding the phone - so it goes to the log
+        // while the app gets a line that names the failing side.
+        _logger?.warn('scan_gateway_error', {
+          'status': response.statusCode,
+          'url': uri.toString(),
+          'model': _config.scanModel,
+          'body': _snippet(raw),
+        });
         throw ScanException(
           'The scan service failed (HTTP ${response.statusCode}).',
           statusCode: 502,
@@ -153,11 +191,16 @@ class VisionClient {
       return _parseAnswer(raw);
     } on ScanException {
       rethrow;
-    } on SocketException {
+    } on SocketException catch (error) {
+      _logger?.warn('scan_gateway_unreachable', {
+        'url': uri.toString(),
+        'error': error.message,
+      });
       throw const ScanException(
         'The server could not reach the scan service.',
       );
     } on TimeoutException {
+      _logger?.warn('scan_gateway_timeout', {'url': uri.toString()});
       throw const ScanException(
         'The scan service did not answer in time. Try again.',
       );

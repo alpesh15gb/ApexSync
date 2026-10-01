@@ -8,6 +8,7 @@ import '../config.dart';
 import '../errors.dart';
 import '../http/json.dart';
 import '../http/middleware.dart';
+import '../log.dart';
 import '../scan/vision_client.dart';
 
 /// The bill-scan endpoint.
@@ -26,8 +27,9 @@ void addScanRoutes(
   required Config config,
   required Middleware guard,
   VisionClient? visionClient,
+  Logger? logger,
 }) {
-  final vision = visionClient ?? VisionClient(config);
+  final vision = visionClient ?? VisionClient(config, logger: logger);
 
   router.post(
     '/v1/firms/<firmId>/scan-bill',
