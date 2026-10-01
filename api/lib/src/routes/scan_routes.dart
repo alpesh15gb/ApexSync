@@ -96,13 +96,30 @@ void addScanRoutes(
         );
       }
 
-      final result = await vision.scanBill(
-        imageBytes: bytes,
-        mimeType: mimeType,
-      );
+      final String model;
+      final Map<String, Object?> bill;
+      try {
+        final result = await vision.scanBill(
+          imageBytes: bytes,
+          mimeType: mimeType,
+        );
+        model = result.model;
+        bill = result.raw;
+      } on ScanException catch (error) {
+        // The vision client's messages are written to be shown to the person
+        // holding the phone - they name the failing side (gateway
+        // credentials, model name, timeout) rather than leaking internals.
+        // Letting one reach the generic middleware would bury them in a
+        // nameless 500 and turn every diagnosis into a log hunt.
+        throw ApiException(
+          error.statusCode ?? 502,
+          'scan_failed',
+          error.message,
+        );
+      }
       return jsonResponse({
-        'bill': result.raw,
-        'model': result.model,
+        'bill': bill,
+        'model': model,
       });
     }),
   );
