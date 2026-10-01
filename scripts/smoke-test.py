@@ -183,6 +183,41 @@ def main() -> int:
     status, _ = call("POST", "/v1/auth/refresh", {"refreshToken": rotated})
     c.check("a revoked token is rejected", status == 401, status)
 
+    print("== sync journal (push then pull)")
+    # The keep firm survives this run, so journaling against it leaves a
+    # durable, inspectable trail. The change id embeds the run id so repeated
+    # runs never collide with their own history (the id is the idempotency key).
+    change_id = f"smoke-{run_id}-0001"
+    push_body = {"changes": [{
+        "id": change_id,
+        "entity": "items",
+        "entityId": f"item-{run_id}",
+        "operation": "insert",
+        "payload": {"id": f"item-{run_id}", "name": "Smoke item"},
+        "createdAt": "2026-01-01T00:00:00Z",
+    }]}
+    status, body = call("POST", f"/v1/firms/{keep_id}/changes", push_body, token=token_one)
+    c.check("a push is journalled", status == 200 and body.get("received") == 1, (status, body))
+    status, body = call("POST", f"/v1/firms/{keep_id}/changes", push_body, token=token_one)
+    c.check("re-pushing the same change id is a duplicate, not an error", status == 200 and body.get("duplicates") == 1, (status, body))
+
+    status, body = call("GET", f"/v1/firms/{keep_id}/changes?afterSeq=0", token=token_one)
+    changes = body.get("changes", []) if status == 200 else []
+    mine = [ch for ch in changes if ch.get("id") == change_id]
+    c.check("a pull from the start returns the pushed change with a seq", status == 200 and len(mine) == 1 and isinstance(mine[0].get("seq"), int), (status, len(changes)))
+    c.check("the pulled change carries the payload it was pushed with", bool(mine) and mine[0].get("payload", {}).get("name") == "Smoke item", mine)
+
+    if mine:
+        seq = mine[0]["seq"]
+        status, body = call("GET", f"/v1/firms/{keep_id}/changes?afterSeq={seq}", token=token_one)
+        after = body.get("changes", []) if status == 200 else ["?"]
+        c.check("pulling from the change's own seq returns nothing newer", status == 200 and after == [], (status, after))
+
+    status, body = call("GET", f"/v1/firms/{keep_id}/changes?afterSeq=-1", token=token_one)
+    c.check("a negative cursor is refused", status == 400, (status, body))
+    status, body = call("GET", f"/v1/firms/{keep_id}/changes?afterSeq=0", token=token_two)
+    c.check("a non-member's pull is an empty journal, not an error (no enumeration)", status == 200 and body.get("changes") == [], (status, body))
+
     if not args.no_db_checks:
         print("== row-level security (direct database introspection)")
 

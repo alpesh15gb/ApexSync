@@ -33,6 +33,69 @@ class PushedChange {
   final DateTime? createdAt;
 }
 
+/// One change as a device should apply it.
+class JournaledChange {
+  const JournaledChange({
+    required this.seq,
+    required this.changeId,
+    required this.entity,
+    required this.entityId,
+    required this.operation,
+    this.payload,
+    this.createdAt,
+  });
+
+  /// Position in the firm's journal. The pull cursor: a device stores the
+  /// highest [seq] it has applied and asks for everything after it.
+  final int seq;
+
+  /// The origin device's outbox id — also how a device recognises its own
+  /// change coming back to it.
+  final String changeId;
+
+  /// App table name: `sales_invoices`, `payments`, `items`, ...
+  final String entity;
+
+  final String entityId;
+
+  /// insert | update | delete.
+  final String operation;
+
+  /// The row as the origin device had it, or null when the row was gone.
+  final Map<String, Object?>? payload;
+
+  /// The origin device's timestamp. Null when it did not record one.
+  final DateTime? createdAt;
+
+  Map<String, Object?> toJson() => {
+        'seq': seq,
+        'id': changeId,
+        'entity': entity,
+        'entityId': entityId,
+        'operation': operation,
+        'payload': payload,
+        'createdAt': createdAt?.toIso8601String(),
+      };
+}
+
+/// The answer to one pull page.
+class PullResult {
+  const PullResult({required this.changes, required this.hasMore});
+
+  /// The page, ordered by [JournaledChange.seq] ascending.
+  final List<JournaledChange> changes;
+
+  /// True when [changes] filled the page, so another pull should follow.
+  /// Decided by fetching limit+1 and dropping the extra, so a change landing
+  /// between the page and the check cannot flip this wrongly.
+  final bool hasMore;
+
+  Map<String, Object?> toJson() => {
+        'changes': [for (final c in changes) c.toJson()],
+        'hasMore': hasMore,
+      };
+}
+
 /// What happened to a batch.
 class PushResult {
   const PushResult({required this.received, required this.duplicates});
@@ -137,4 +200,73 @@ class SyncRepository {
       );
     });
   }
+
+  /// Reads the firm's journal from [afterSeq], oldest first, at most [limit]
+  /// rows plus one so the caller learns whether more exist.
+  ///
+  /// Runs inside [Database.asUser] like the push: row-level security decides
+  /// what this caller may read, so a non-member's pull is indistinguishable
+  /// from a firm with an empty journal — the same no-enumeration rule the push
+  /// and the firm routes follow.
+  ///
+  /// [afterSeq] is validated as a non-negative integer before this method, so
+  /// the comparison stays an integer comparison rather than a cast the planner
+  /// could get wrong.
+  Future<PullResult> pullChanges({
+    required String userId,
+    required String firmId,
+    required int afterSeq,
+    int limit = maxChangesPerPull,
+  }) async {
+    if (limit < 1 || limit > maxChangesPerPull) {
+      throw RangeError.range(limit, 1, maxChangesPerPull, 'limit');
+    }
+
+    return _db.asUser(userId, (session) async {
+      final result = await session.execute(
+        Sql.named('''
+          SELECT seq, change_id, entity, entity_id, operation, payload,
+                 created_at
+          FROM firm_changes
+          WHERE firm_id = @firmId AND seq > @afterSeq
+          ORDER BY seq ASC
+          LIMIT @limit
+        '''),
+        parameters: {
+          'firmId': firmId,
+          'afterSeq': afterSeq,
+          // One extra row tells us hasMore without a second query.
+          'limit': limit + 1,
+        },
+      );
+
+      final rows = result.map((r) => r.toColumnMap()).toList();
+      final hasMore = rows.length > limit;
+      if (hasMore) rows.removeLast();
+
+      return PullResult(
+        changes: [
+          for (final row in rows)
+            JournaledChange(
+              seq: (row['seq'] as int).toInt(),
+              changeId: row['change_id'] as String,
+              entity: row['entity'] as String,
+              entityId: row['entity_id'] as String,
+              operation: row['operation'] as String,
+              payload: row['payload'] == null
+                  ? null
+                  : (row['payload'] as Map).cast<String, Object?>(),
+              createdAt: row['created_at'] is DateTime
+                  ? (row['created_at'] as DateTime).toUtc()
+                  : null,
+            ),
+        ],
+        hasMore: hasMore,
+      );
+    });
+  }
 }
+
+/// The largest batch one pull may return. Matches the push cap: one round trip
+/// moves the same amount of data either way.
+const int maxChangesPerPull = 500;

@@ -356,6 +356,71 @@ void main() {
     });
   });
 
+  group('change pull', () {
+    const firmId = '018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b';
+    late String token;
+
+    setUpAll(() {
+      token = TokenIssuer(
+        secret: testConfig().jwtSecret,
+        issuer: 'api.apexbooks.in',
+        ttl: const Duration(minutes: 15),
+      ).issue(userId: 'user-1', deviceId: 'device-1');
+    });
+
+    Map<String, String> auth() => {'authorization': 'Bearer $token'};
+
+    Future<Response> pull({String? query}) => send(
+          'GET',
+          '/v1/firms/$firmId/changes${query ?? ''}',
+          headers: auth(),
+        );
+
+    test('pulling without a token is a JSON 401', () async {
+      final response =
+          await send('GET', '/v1/firms/$firmId/changes');
+      expect(response.statusCode, 401);
+    });
+
+    test('a malformed firm id is a 400 before any database work', () async {
+      final response = await send(
+        'GET',
+        '/v1/firms/not-a-uuid/changes',
+        headers: auth(),
+      );
+      expect(response.statusCode, 400);
+    });
+
+    test('a negative cursor is refused', () async {
+      final response = await pull(query: '?afterSeq=-1');
+      expect(response.statusCode, 400);
+      expect(
+        ((await bodyOf(response))['error'] as Map)['message'],
+        contains('afterSeq'),
+      );
+    });
+
+    test('a non-integer cursor is refused', () async {
+      final response = await pull(query: '?afterSeq=two');
+      expect(response.statusCode, 400);
+    });
+
+    test('an out-of-range page size is refused', () async {
+      expect((await pull(query: '?limit=0')).statusCode, 400);
+      expect((await pull(query: '?limit=501')).statusCode, 400);
+      expect((await pull(query: '?limit=abc')).statusCode, 400);
+    });
+
+    test('a valid pull reaches the database', () async {
+      // Same reasoning as the push twin of this test: with the database
+      // unreachable, a 500 proves the request survived authentication and
+      // validation and died where the read happens. A 200 with no database
+      // behind it would be the route inventing an empty journal.
+      final response = await pull(query: '?afterSeq=0');
+      expect(response.statusCode, 500);
+    });
+  });
+
   group('request validation', () {
     test('a missing body is rejected before any database work', () async {
       final response = await send('POST', '/v1/auth/login');

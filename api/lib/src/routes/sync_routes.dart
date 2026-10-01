@@ -88,6 +88,49 @@ void addSyncRoutes(
       return jsonResponse(result.toJson());
     }),
   );
+
+  /// Pulls the firm's journal from a cursor, oldest first.
+  ///
+  /// The device keeps the highest `seq` it has applied per firm and sends it as
+  /// `afterSeq`; the answer is every change after that point, up to the page
+  /// cap, plus `hasMore` so the device knows to loop. Applying is the device's
+  /// job — see the app's pull engine for the row-level last-write-wins rules —
+  /// because the server never holds row state to arbitrate with.
+  router.get(
+    '/v1/firms/<firmId>/changes',
+    guard((Request request) async {
+      final principal = requirePrincipal(request);
+      final firmId = normaliseUuid(request.params['firmId'] ?? '', 'firmId');
+
+      final raw = request.url.queryParameters['afterSeq'] ?? '0';
+      final afterSeq = int.tryParse(raw);
+      if (afterSeq == null || afterSeq < 0) {
+        throw const ApiException.badRequest(
+          '"afterSeq" must be a non-negative integer.',
+        );
+      }
+
+      final limitRaw = request.url.queryParameters['limit'] ?? '';
+      var limit = maxChangesPerPull;
+      if (limitRaw.isNotEmpty) {
+        final parsed = int.tryParse(limitRaw);
+        if (parsed == null || parsed < 1 || parsed > maxChangesPerPull) {
+          throw ApiException.badRequest(
+            '"limit" must be between 1 and $maxChangesPerPull.',
+          );
+        }
+        limit = parsed;
+      }
+
+      final result = await repository.pullChanges(
+        userId: principal.userId,
+        firmId: firmId,
+        afterSeq: afterSeq,
+        limit: limit,
+      );
+      return jsonResponse(result.toJson());
+    }),
+  );
 }
 
 /// Validates one change out of a batch.
