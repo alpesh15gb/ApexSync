@@ -122,6 +122,10 @@ class VisionClient {
       'copy unit strings as printed (BOX, PCS, KG); if a line shows an '
       'inclusive price, still report the printed rate and say so in warnings; '
       'omit nothing from the bill - every printed line goes into "lines"; '
+      'for a PDF read every page of the attached document; '
+      'copy the printed grandTotal even when item arithmetic disagrees, '
+      'and report the mismatch in warnings rather than inventing charges; '
+      'warn if pages appear missing or the document is a proforma invoice; '
       'when several images are supplied they are consecutive pages of ONE '
       'bill: read all pages in order, include each item once, ignore repeated '
       'headers and carried-forward subtotals, and use the final invoice total; '
@@ -204,13 +208,23 @@ class VisionClient {
               'text': attempt == 1 ? _prompt : '$_prompt$_retryNudge',
             },
             for (final page in pages)
-              {
-                'type': 'image_url',
-                'image_url': {
-                  'url':
-                      'data:${page.mimeType};base64,${base64Encode(page.bytes)}',
+              if (page.mimeType == 'application/pdf')
+                {
+                  'type': 'file',
+                  'file': {
+                    'filename': 'bill.pdf',
+                    'file_data':
+                        'data:application/pdf;base64,${base64Encode(page.bytes)}',
+                  },
+                }
+              else
+                {
+                  'type': 'image_url',
+                  'image_url': {
+                    'url':
+                        'data:${page.mimeType};base64,${base64Encode(page.bytes)}',
+                  },
                 },
-              },
           ],
         },
       ],

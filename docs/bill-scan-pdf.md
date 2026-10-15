@@ -1,11 +1,17 @@
 # Deploy bill scanning with PDF pages and APEXV1
 
-The updated Windows app renders PDFs locally and sends all pages in one
-`imagesBase64` array. This API update accepts up to 10 images with an aggregate
-10 MB decoded limit (configurable through `ATRIA_SCAN_MAX_IMAGE_BYTES`).
-Legacy `imageBase64` uploads remain supported. The model receives every page
-in order with instructions to ignore repeated headers and carried subtotals.
+The updated Windows app sends original PDFs through `documentBase64`.
+The API sniffs the PDF header and forwards a Chat Completions `file` part
+with filename `bill.pdf` and a base64 PDF data URI to the existing APEXV1
+combo. It does not rasterize the PDF locally. Original documents are limited
+to 10 MB. The previous single-image and ordered multi-image contracts remain
+supported for photos and older clients.
 
+Native PDF handling depends on the selected provider's file-input support.
+A live PDF scan through the deployed combo is still required to verify
+compatibility and latency; native upload does not guarantee a 5–10 second scan.
+The prompt asks the model to read every PDF page, preserve the printed total,
+and warn about arithmetic mismatches, missing pages or proforma invoices.
 The gateway's missing Playwright runtime is a separate provider problem.
 This update reports that failure clearly and avoids a pointless retry.
 It does not install browsers or modify OmniRoute's combos. Keep the existing
@@ -79,6 +85,6 @@ docker logs --since=5m atria-server-api-1 2>&1 | grep -E 'scan_|scan-bill'
 docker logs --since=5m --tail=100 omniroute 2>&1
 ```
 
-Local validation: 57 API tests, including multiple-page validation, ordered
-provider payloads and missing-browser errors; 14 app tests. Live model image
-support and native PDF rendering still require the above end-to-end checks.
+Local validation: 71 API tests, including multiple-page validation, ordered
+provider payloads and missing-browser errors; 23 app tests. Live model image
+support and native PDF handling still require the above end-to-end checks.

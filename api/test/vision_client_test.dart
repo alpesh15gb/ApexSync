@@ -99,6 +99,26 @@ void main() {
     expect(log.entries.last['timeoutSeconds'], 1);
   });
 
+  test('PDFs are forwarded as native file attachments', () async {
+    await startGateway(
+        200,
+        jsonEncode({
+          'choices': [
+            {
+              'message': {'content': '{"lines":[]}'}
+            }
+          ],
+        }));
+    final pdf = '%PDF-1.7 document'.codeUnits;
+    await clientFor(server.port)
+        .scanBill(imageBytes: pdf, mimeType: 'application/pdf');
+    final content = jsonDecode(sentPayload)['messages'][0]['content'] as List;
+    expect(content[1]['type'], 'file');
+    expect(content[1]['file']['filename'], 'bill.pdf');
+    expect(content[1]['file']['file_data'],
+        'data:application/pdf;base64,${base64Encode(pdf)}');
+  });
+
   test('a healthy answer is parsed out of markdown fences', () async {
     await startGateway(
       200,

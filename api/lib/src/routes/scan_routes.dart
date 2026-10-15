@@ -52,7 +52,8 @@ void addScanRoutes(
       );
 
       final supplied = body['imagesBase64'];
-      final images = supplied ?? [body['imageBase64']];
+      final images =
+          supplied ?? [body['documentBase64'] ?? body['imageBase64']];
       if (images is! List || images.isEmpty || images.length > 10) {
         throw const ApiException.badRequest(
             'Provide between 1 and 10 bill pages.');
@@ -136,6 +137,9 @@ void addScanRoutes(
 /// vendors are strict about the declared type matching the bytes.
 String? _sniffImage(List<int> bytes) {
   if (bytes.length < 12) return null;
+  if (String.fromCharCodes(bytes.take(5)) == '%PDF-') {
+    return 'application/pdf';
+  }
   // JPEG: FF D8 FF
   if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
     return 'image/jpeg';

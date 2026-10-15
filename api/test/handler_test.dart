@@ -489,6 +489,13 @@ void main() {
       );
     });
 
+    test('native PDF documents validate before feature configuration',
+        () async {
+      final pdf =
+          base64Encode([...'%PDF-1.7'.codeUnits, ...List.filled(600, 32)]);
+      expect((await scan(body: {'documentBase64': pdf})).statusCode, 501);
+    });
+
     test('invalid base64 is a 400', () async {
       final response = await scan(body: {'imageBase64': 'not base64!!'});
       expect(response.statusCode, 400);
