@@ -48,7 +48,8 @@ void main() {
   }
 
   Future<Map<String, Object?>> bodyOf(Response response) async =>
-      (jsonDecode(await response.readAsString()) as Map).cast<String, Object?>();
+      (jsonDecode(await response.readAsString()) as Map)
+          .cast<String, Object?>();
 
   group('public routes', () {
     test('GET / identifies the service', () async {
@@ -377,8 +378,7 @@ void main() {
         );
 
     test('pulling without a token is a JSON 401', () async {
-      final response =
-          await send('GET', '/v1/firms/$firmId/changes');
+      final response = await send('GET', '/v1/firms/$firmId/changes');
       expect(response.statusCode, 401);
     });
 
@@ -467,8 +467,7 @@ void main() {
       expect(response.statusCode, 400);
     });
 
-    test('an unconfigured backend is a 501 that names the variables',
-        () async {
+    test('an unconfigured backend is a 501 that names the variables', () async {
       // handler's config has no ATRIA_SCAN_* values, which is exactly how a
       // deployment without the feature looks.
       final response = await scan();
@@ -493,6 +492,24 @@ void main() {
     test('invalid base64 is a 400', () async {
       final response = await scan(body: {'imageBase64': 'not base64!!'});
       expect(response.statusCode, 400);
+    });
+
+    test('multiple PDF page images validate before feature configuration',
+        () async {
+      final response = await scan(body: {
+        'imagesBase64': [jpegish, jpegish]
+      });
+      expect(response.statusCode, 501);
+    });
+
+    test('rejects invalid or excessive page lists', () async {
+      for (final pages in [
+        [],
+        List.filled(11, jpegish),
+        [jpegish, 'invalid!!']
+      ]) {
+        expect((await scan(body: {'imagesBase64': pages})).statusCode, 400);
+      }
     });
   });
 
@@ -611,11 +628,11 @@ void main() {
       final logger = Logger(level: LogLevel.error, sink: logged.add);
 
       const connectionString = 'postgresql://atria:hunter2@db:5432/atria';
-      final leaky = Pipeline()
-          .addMiddleware(jsonErrors(logger))
-          .addHandler((request) => throw StateError('connect to $connectionString'));
+      final leaky = Pipeline().addMiddleware(jsonErrors(logger)).addHandler(
+          (request) => throw StateError('connect to $connectionString'));
 
-      final response = await leaky(Request('GET', Uri.parse('http://localhost/x')));
+      final response =
+          await leaky(Request('GET', Uri.parse('http://localhost/x')));
       expect(response.statusCode, 500);
 
       final raw = await response.readAsString();
@@ -628,11 +645,11 @@ void main() {
     });
 
     test('an ApiException keeps its own status and message', () async {
-      final pipeline = Pipeline()
-          .addMiddleware(jsonErrors(silentLogger()))
-          .addHandler(
-            (request) => throw const ApiException.conflict('Already exists.'),
-          );
+      final pipeline =
+          Pipeline().addMiddleware(jsonErrors(silentLogger())).addHandler(
+                (request) =>
+                    throw const ApiException.conflict('Already exists.'),
+              );
 
       final response =
           await pipeline(Request('GET', Uri.parse('http://localhost/x')));

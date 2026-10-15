@@ -49,7 +49,8 @@ void main() {
       // error instead of the response.
       sentPayload = await utf8.decoder.bind(request).join();
       seen.add(request);
-      final step = script[index < script.length - 1 ? index : script.length - 1];
+      final step =
+          script[index < script.length - 1 ? index : script.length - 1];
       index++;
       request.response.statusCode = step.key;
       request.response.headers.contentType = ContentType.json;
@@ -104,6 +105,44 @@ void main() {
     expect(sentPayload, contains('"model":"gpt-4o-mini"'));
   });
 
+  test('missing provider browser runtime fails without a pointless retry',
+      () async {
+    await startGateway(
+        502, '{"error":{"message":"Playwright is not available"}}');
+    await expectLater(
+      clientFor(server.port)
+          .scanBill(imageBytes: image, mimeType: 'image/jpeg'),
+      throwsA(isA<ScanException>()
+          .having((e) => e.retryable, 'retryable', false)
+          .having((e) => e.message, 'message', contains('browser runtime'))),
+    );
+    expect(seen, hasLength(1));
+  });
+
+  test('all PDF page images go to the model in one ordered request', () async {
+    await startGateway(
+        200,
+        jsonEncode({
+          'choices': [
+            {
+              'message': {'content': '{"lines":[]}'}
+            }
+          ],
+        }));
+    await clientFor(server.port).scanBill(
+      imageBytes: image,
+      mimeType: 'image/jpeg',
+      pages: [
+        ScanImage(image, 'image/jpeg'),
+        ScanImage([1, 2, 3], 'image/png')
+      ],
+    );
+    final payload = jsonDecode(sentPayload) as Map;
+    final content = payload['messages'][0]['content'] as List;
+    expect(content.where((part) => part['type'] == 'image_url'), hasLength(2));
+    expect(content[2]['image_url']['url'], 'data:image/png;base64,AQID');
+  });
+
   test('a 502 on both attempts fails after exactly two requests', () async {
     // This is the live shape observed from the deployment's gateway: it
     // accepts the key, then fails downstream and answers 502 with the reason
@@ -132,7 +171,8 @@ void main() {
     expect(seen, hasLength(2));
     final msgs = log.entries.map((e) => e['msg']).toList();
     expect(msgs, ['scan_gateway_error', 'scan_retry', 'scan_gateway_error']);
-    expect(log.entries.first['body'], contains('No active credentials for provider'));
+    expect(log.entries.first['body'],
+        contains('No active credentials for provider'));
     expect(log.entries.first['url'], endsWith('/v1/chat/completions'));
     expect(log.entries[1]['reason'], contains('HTTP 502'));
   });
@@ -180,12 +220,12 @@ void main() {
         const MapEntry(
           200,
           '{"choices":[{"message":{"content":"Gemini 3 Pro is no longer '
-              'available. Please switch to Gemini 3.1 Pro."}}]}',
+          'available. Please switch to Gemini 3.1 Pro."}}]}',
         ),
         const MapEntry(
           200,
           '{"choices":[{"message":{"content":"{\\"supplierName\\":'
-              '\\"Sharma Traders\\"}"}}]}',
+          '\\"Sharma Traders\\"}"}}]}',
         ),
       ],
     );
@@ -218,7 +258,8 @@ void main() {
       throwsA(
         isA<ScanException>()
             .having((e) => e.statusCode, 'statusCode', 502)
-            .having((e) => e.message, 'message', contains('ATRIA_SCAN_API_KEY')),
+            .having(
+                (e) => e.message, 'message', contains('ATRIA_SCAN_API_KEY')),
       ),
     );
 
@@ -228,7 +269,11 @@ void main() {
 
   test('rate limiting keeps its own status so the app can say try again',
       () async {
-    await startGateway(429, jsonEncode({'error': {'message': 'slow down'}}));
+    await startGateway(
+        429,
+        jsonEncode({
+          'error': {'message': 'slow down'}
+        }));
 
     await expectLater(
       clientFor(server.port, captured: log).scanBill(

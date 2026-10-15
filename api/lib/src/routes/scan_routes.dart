@@ -48,42 +48,45 @@ void addScanRoutes(
       // "your request was fine; the server lacks the feature".
       final body = await readJsonObject(
         request,
-        maxBytes: config.scanMaxImageBytes + 64 * 1024,
+        maxBytes: ((config.scanMaxImageBytes + 2) ~/ 3) * 4 + 64 * 1024,
       );
 
-      final image = body['imageBase64'];
-      if (image is! String || image.trim().isEmpty) {
-        throw const ApiException.badRequest('"imageBase64" is required.');
-      }
-
-      List<int> bytes;
-      try {
-        bytes = base64Decode(image.trim());
-      } on FormatException {
+      final supplied = body['imagesBase64'];
+      final images = supplied ?? [body['imageBase64']];
+      if (images is! List || images.isEmpty || images.length > 10) {
         throw const ApiException.badRequest(
-          '"imageBase64" is not valid base64.',
-        );
+            'Provide between 1 and 10 bill pages.');
       }
-      if (bytes.length < 512) {
-        throw const ApiException.badRequest(
-          'That image is too small to be a bill photo.',
-        );
+      final pages = <ScanImage>[];
+      var totalBytes = 0;
+      for (final image in images) {
+        if (image is! String || image.trim().isEmpty) {
+          throw const ApiException.badRequest(
+              '"imageBase64" is required for every page.');
+        }
+        List<int> bytes;
+        try {
+          bytes = base64Decode(image.trim());
+        } on FormatException {
+          throw const ApiException.badRequest(
+              '"imageBase64" is not valid base64.');
+        }
+        totalBytes += bytes.length;
+        if (bytes.length < 512) {
+          throw const ApiException.badRequest(
+              'That image is too small to be a bill photo.');
+        }
+        if (totalBytes > config.scanMaxImageBytes) {
+          throw const ApiException.badRequest(
+              'Bill pages exceed the upload size limit. Choose a smaller file.');
+        }
+        final mimeType = _sniffImage(bytes);
+        if (mimeType == null) {
+          throw const ApiException.badRequest(
+              'Only JPEG, PNG, WebP and HEIC images can be scanned.');
+        }
+        pages.add(ScanImage(bytes, mimeType));
       }
-      if (bytes.length > config.scanMaxImageBytes) {
-        throw ApiException.badRequest(
-          'The photo is larger than the '
-          '${(config.scanMaxImageBytes / (1024 * 1024)).round()} MB limit. '
-          'Shoot it again; bills do not need full resolution.',
-        );
-      }
-
-      final mimeType = _sniffImage(bytes);
-      if (mimeType == null) {
-        throw const ApiException.badRequest(
-          'Only JPEG, PNG, WebP and HEIC images can be scanned.',
-        );
-      }
-
       if (!config.scanEnabled) {
         // Feature-off is a distinct, actionable answer rather than a 404, and
         // it comes AFTER validation so a client always sees the same contract
@@ -102,8 +105,9 @@ void addScanRoutes(
       final Map<String, Object?> bill;
       try {
         final result = await vision.scanBill(
-          imageBytes: bytes,
-          mimeType: mimeType,
+          imageBytes: pages.first.bytes,
+          mimeType: pages.first.mimeType,
+          pages: pages,
         );
         model = result.model;
         bill = result.raw;

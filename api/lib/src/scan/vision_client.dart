@@ -18,6 +18,12 @@ class ScannedBill {
   final String model;
 }
 
+class ScanImage {
+  const ScanImage(this.bytes, this.mimeType);
+  final List<int> bytes;
+  final String mimeType;
+}
+
 /// Normalises a configured scan endpoint into a full chat-completions URL.
 ///
 /// Deployments naturally write the base (".../v1") the way every SDK treats
@@ -116,11 +122,15 @@ class VisionClient {
       'copy unit strings as printed (BOX, PCS, KG); if a line shows an '
       'inclusive price, still report the printed rate and say so in warnings; '
       'omit nothing from the bill - every printed line goes into "lines"; '
+      'when several images are supplied they are consecutive pages of ONE '
+      'bill: read all pages in order, include each item once, ignore repeated '
+      'headers and carried-forward subtotals, and use the final invoice total; '
       'if the image is not a bill, return {"error": "not_a_bill"}.';
 
   Future<ScannedBill> scanBill({
     required List<int> imageBytes,
     required String mimeType,
+    List<ScanImage>? pages,
   }) async {
     final uri = chatCompletionsUrl(_config.scanApiUrl);
     final client = HttpClient()..connectionTimeout = _timeout;
@@ -134,7 +144,9 @@ class VisionClient {
       var attempt = 1;
       while (true) {
         try {
-          return await _scanOnce(client, uri, imageBytes, mimeType, attempt);
+          return await _scanOnce(client, uri,
+                  pages ?? [ScanImage(imageBytes, mimeType)], attempt)
+              .timeout(_timeout);
         } on ScanException catch (error) {
           if (!error.retryable || attempt >= 2) rethrow;
           attempt++;
@@ -168,13 +180,12 @@ class VisionClient {
   Future<ScannedBill> _scanOnce(
     HttpClient client,
     Uri uri,
-    List<int> imageBytes,
-    String mimeType,
+    List<ScanImage> pages,
     int attempt,
   ) async {
     final request = await client.postUrl(uri).timeout(_timeout);
-    request.headers.set(
-        HttpHeaders.authorizationHeader, 'Bearer ${_config.scanApiKey}');
+    request.headers
+        .set(HttpHeaders.authorizationHeader, 'Bearer ${_config.scanApiKey}');
     request.headers.contentType = ContentType.json;
 
     final body = jsonEncode({
@@ -188,12 +199,14 @@ class VisionClient {
               'type': 'text',
               'text': attempt == 1 ? _prompt : '$_prompt$_retryNudge',
             },
-            {
-              'type': 'image_url',
-              'image_url': {
-                'url': 'data:$mimeType;base64,${base64Encode(imageBytes)}',
+            for (final page in pages)
+              {
+                'type': 'image_url',
+                'image_url': {
+                  'url':
+                      'data:${page.mimeType};base64,${base64Encode(page.bytes)}',
+                },
               },
-            },
           ],
         },
       ],
@@ -246,6 +259,15 @@ class VisionClient {
         'model': _config.scanModel,
         'body': _snippet(raw),
       });
+      if (raw.contains('Playwright is not available') ||
+          raw.contains('CLOUDFLARE_PLAYGROUND_CHROME_PATH')) {
+        throw const ScanException(
+          'The scan provider is missing its browser runtime. The server '
+          'administrator must repair the provider or select a working vision model.',
+          statusCode: 502,
+          retryable: false,
+        );
+      }
       throw ScanException(
         'The scan service failed (HTTP ${response.statusCode}).',
         statusCode: 502,
@@ -264,7 +286,8 @@ class VisionClient {
     try {
       final decoded = jsonDecode(responseBody);
       if (decoded is! Map) {
-        throw const ScanException('The scan service answered in an unexpected shape.');
+        throw const ScanException(
+            'The scan service answered in an unexpected shape.');
       }
       outer = decoded.cast<String, Object?>();
     } on ScanException {
