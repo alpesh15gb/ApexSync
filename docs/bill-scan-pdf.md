@@ -56,7 +56,7 @@ location ~ ^/v1/firms/[^/]+/scan-bill$ {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 135s;
+    proxy_read_timeout 255s;
 }
 ```
 
@@ -65,8 +65,8 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 The 15 MB allowance covers base64 expansion of the 10 MB image payload.
-Each provider attempt is bounded to 60 seconds, so the proxy allows both
-attempts. The updated app waits 150 seconds.
+Each provider attempt is bounded to 120 seconds, so the proxy allows both
+attempts. The updated app waits 270 seconds.
 
 ## Verification
 

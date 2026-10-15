@@ -5,6 +5,18 @@ import 'support.dart';
 
 void main() {
   group('Config', () {
+    test('scan timeout defaults to 120 seconds and validates overrides', () {
+      expect(testConfig().scanTimeout, const Duration(seconds: 120));
+      expect(
+          testConfig(overrides: {'ATRIA_SCAN_TIMEOUT_SECONDS': '90'})
+              .scanTimeout,
+          const Duration(seconds: 90));
+      for (final value in ['0', '-1', '121', 'invalid']) {
+        expect(
+            () => testConfig(overrides: {'ATRIA_SCAN_TIMEOUT_SECONDS': value}),
+            throwsA(isA<ConfigException>()));
+      }
+    });
     test('accepts a complete environment and applies defaults', () {
       final config = testConfig();
 
@@ -67,13 +79,11 @@ void main() {
 
     test('parses duration suffixes', () {
       expect(
-        testConfig(overrides: {'ATRIA_ACCESS_TOKEN_TTL': '90s'})
-            .accessTokenTtl,
+        testConfig(overrides: {'ATRIA_ACCESS_TOKEN_TTL': '90s'}).accessTokenTtl,
         const Duration(seconds: 90),
       );
       expect(
-        testConfig(overrides: {'ATRIA_ACCESS_TOKEN_TTL': '45m'})
-            .accessTokenTtl,
+        testConfig(overrides: {'ATRIA_ACCESS_TOKEN_TTL': '45m'}).accessTokenTtl,
         const Duration(minutes: 45),
       );
       expect(
@@ -82,8 +92,7 @@ void main() {
         const Duration(days: 90),
       );
       expect(
-        testConfig(overrides: {'ATRIA_ACCESS_TOKEN_TTL': '900'})
-            .accessTokenTtl,
+        testConfig(overrides: {'ATRIA_ACCESS_TOKEN_TTL': '900'}).accessTokenTtl,
         const Duration(seconds: 900),
       );
       expect(

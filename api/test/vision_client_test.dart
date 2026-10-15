@@ -77,6 +77,28 @@ void main() {
     await server.close(force: true);
   });
 
+  test('uses the configured deadline and logs it on timeout', () async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      await utf8.decoder.bind(request).join();
+      // Deliberately leave the response open until the client deadline.
+    });
+    final client = VisionClient(
+        testConfig(overrides: {
+          'ATRIA_SCAN_API_URL': 'http://127.0.0.1:${server.port}/v1',
+          'ATRIA_SCAN_API_KEY': 'gateway-key',
+          'ATRIA_SCAN_TIMEOUT_SECONDS': '1',
+        }),
+        logger: log.logger);
+    await expectLater(
+      client.scanBill(imageBytes: image, mimeType: 'image/jpeg'),
+      throwsA(isA<ScanException>()
+          .having((e) => e.message, 'message', contains('within 1 seconds'))),
+    );
+    expect(log.entries.last['msg'], 'scan_gateway_timeout');
+    expect(log.entries.last['timeoutSeconds'], 1);
+  });
+
   test('a healthy answer is parsed out of markdown fences', () async {
     await startGateway(
       200,

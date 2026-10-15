@@ -34,6 +34,7 @@ class Config {
     this.scanApiKey = '',
     this.scanModel = 'gpt-4o-mini',
     this.scanMaxImageBytes = 10 * 1024 * 1024,
+    this.scanTimeout = const Duration(seconds: 120),
   });
 
   /// Full `postgresql://` URL, assembled here so a password containing `/`,
@@ -63,6 +64,9 @@ class Config {
   /// Largest image upload the scan endpoint accepts. A phone photo of a bill
   /// is 2-6 MB; 10 MB covers the clumsy edge without inviting video.
   final int scanMaxImageBytes;
+
+  /// Per provider attempt, including connection and response body.
+  final Duration scanTimeout;
 
   /// True when the scan endpoint can actually do its job.
   bool get scanEnabled => scanApiUrl.isNotEmpty && scanApiKey.isNotEmpty;
@@ -160,6 +164,10 @@ class Config {
     final scanApiUrl = optional('ATRIA_SCAN_API_URL') ?? '';
     final scanApiKey = optional('ATRIA_SCAN_API_KEY') ?? '';
     final scanModel = optional('ATRIA_SCAN_MODEL') ?? 'gpt-4o-mini';
+    final scanTimeoutSeconds = integer('ATRIA_SCAN_TIMEOUT_SECONDS', 120);
+    if (scanTimeoutSeconds < 1 || scanTimeoutSeconds > 120) {
+      problems.add('ATRIA_SCAN_TIMEOUT_SECONDS must be between 1 and 120.');
+    }
     final scanMaxImageBytes =
         integer('ATRIA_SCAN_MAX_IMAGE_BYTES', 10 * 1024 * 1024);
 
@@ -181,7 +189,8 @@ class Config {
     }
 
     if (maxRequestBodyBytes < 1024) {
-      problems.add('ATRIA_MAX_BODY_BYTES must be at least 1024, got $maxRequestBodyBytes');
+      problems.add(
+          'ATRIA_MAX_BODY_BYTES must be at least 1024, got $maxRequestBodyBytes');
     }
 
     if (problems.isEmpty) {
@@ -215,6 +224,7 @@ class Config {
       scanApiKey: scanApiKey,
       scanModel: scanModel,
       scanMaxImageBytes: scanMaxImageBytes,
+      scanTimeout: Duration(seconds: scanTimeoutSeconds),
     );
   }
 

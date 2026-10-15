@@ -74,7 +74,7 @@ server {
     }
 
     # Base64 expands the bounded 10 MB scan payload to about 14 MB.
-    # Two provider attempts can each take 60 seconds.
+    # Two provider attempts can each take 120 seconds.
     location ~ ^/v1/firms/[^/]+/scan-bill$ {
         limit_req zone=atria_api burst=10 nodelay;
         client_max_body_size 15m;
@@ -89,7 +89,7 @@ server {
         proxy_connect_timeout 5s;
         proxy_send_timeout 60s;
         proxy_buffering off;
-        proxy_read_timeout 135s;
+        proxy_read_timeout 255s;
     }
 
     location / {

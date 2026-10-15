@@ -77,7 +77,7 @@ class VisionClient {
   /// says why, which is the difference between one redeploy and a log hunt.
   final Logger? _logger;
 
-  static const _timeout = Duration(seconds: 60);
+  Duration get _timeout => _config.scanTimeout;
 
   /// Appended to the prompt on the second attempt. Most first-try failures
   /// are a model ignoring the JSON-only contract (or a broken provider in a
@@ -165,9 +165,13 @@ class VisionClient {
         'The server could not reach the scan service.',
       );
     } on TimeoutException {
-      _logger?.warn('scan_gateway_timeout', {'url': uri.toString()});
-      throw const ScanException(
-        'The scan service did not answer in time. Try again.',
+      _logger?.warn('scan_gateway_timeout', {
+        'url': uri.toString(),
+        'timeoutSeconds': _timeout.inSeconds,
+      });
+      throw ScanException(
+        'The scan service did not answer within ${_timeout.inSeconds} seconds. '
+        'Try again or check the model configured in the scan combo.',
       );
     } finally {
       client.close(force: true);
